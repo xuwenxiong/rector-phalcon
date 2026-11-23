@@ -185,6 +185,17 @@ CLI `Console::addModules()` → `registerModules()` 由自定义规则 `RenameCl
 
 Cache 在 PSR-16 化后对可解析为 `Phalcon\Cache` / `Phalcon\CacheInterface` 的调用做 `exists()` → `has()`、`save()` → `set()` 重命名。
 
+#### DI 服务类型推断（解决 DI 取服务变量无法重命名）
+
+从 DI 拿到的服务变量（如 `$cache = $this->getDI()->get('cache')`）PHPStan 无法推断类型，`RenameMethodRector` 会跳过它的方法调用。为此在配置阶段新增一层类型推断，不依赖硬编码服务名：
+
+- `DiServiceScanner` 在配置阶段扫描项目 PHP 文件，从 `setShared('name', fn() => new Xxx)` / `set()` 注册闭包中提取「服务名 → 返回类名」映射。服务名任意，不做字面量假设。
+- 映射持久化到临时文件（`DiServiceRegistry`），因为 Rector 并行处理时扫描在主进程、类型分析在 worker 进程，静态内存不共享；worker 首次访问时从文件重载。
+- `src/PHPStan/di-services.neon` 注册 `DiServiceReturnTypeExtension`（PHPStan 动态方法返回类型扩展），让 `Di::get('name')` / `getShared('name')` 返回注册的类；由 3→4 set 通过 `phpstanConfig()` 自动注入，用户无需改 `rector.php`。
+- 覆盖 v3/v4 的 `Phalcon\Di` 与 v5 的 `Phalcon\Di\Di` 两个容器类。
+
+这样 `RenameMethodRector` 就能对 DI 取出的 cache 变量正确改写 `exists/save`，且零硬编码、零误伤（按注册返回类型判定，而非方法名猜测）。已用真实 set 在默认并行模式下端到端验证。
+
 ### 3.4 导入策略
 
 规则集显式关闭全局自动导入：

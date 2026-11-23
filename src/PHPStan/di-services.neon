@@ -1,0 +1,13 @@
+services:
+    -
+        class: RectorPhalcon\PHPStan\DiServiceReturnTypeExtension
+        arguments:
+            - 'Phalcon\Di'
+        tags:
+            - phpstan.broker.dynamicMethodReturnTypeExtension
+    -
+        class: RectorPhalcon\PHPStan\DiServiceReturnTypeExtension
+        arguments:
+            - 'Phalcon\Di\Di'
+        tags:
+            - phpstan.broker.dynamicMethodReturnTypeExtension

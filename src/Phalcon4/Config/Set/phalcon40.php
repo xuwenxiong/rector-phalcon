@@ -39,6 +39,7 @@ use Rector\Renaming\ValueObject\MethodCallRename;
 use Rector\Renaming\ValueObject\RenameClassAndConstFetch;
 use Rector\Renaming\ValueObject\RenameClassConstFetch;
 use Rector\Renaming\ValueObject\RenameProperty;
+use RectorPhalcon\Set\DiServiceScanner;
 use RectorPhalcon\Set\Phalcon5SourceGuard;
 use RectorPhalcon\Set\PhalconSetList;
 use RectorPhalcon\Set\PhalconStage;
@@ -52,6 +53,13 @@ return static function (RectorConfig $rectorConfig): void {
 
     // Block this stage on already-Phalcon-5 source before any file is touched.
     Phalcon5SourceGuard::guard(SimpleParameterProvider::provideArrayParameter(Option::PATHS));
+
+    // Scan DI service registrations (setShared('name', fn() => new Xxx)) so the
+    // PHPStan extension can type Di::get('name') precisely. This lets the
+    // MethodCallRename rules below migrate methods on DI-fetched services
+    // (e.g. $cache->exists() -> has()) without depending on the service name.
+    DiServiceScanner::scan(SimpleParameterProvider::provideArrayParameter(Option::PATHS));
+    $rectorConfig->phpstanConfig(__DIR__ . '/../../../PHPStan/di-services.neon');
 
     // ---------------------------------------------------------------------
     // 1. Custom rules — MUST be registered before RenameClassRector
