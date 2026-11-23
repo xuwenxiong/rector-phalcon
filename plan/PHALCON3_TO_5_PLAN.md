@@ -5,7 +5,7 @@
 > 当前基础：
 >
 > - 当前分支已实现 Phalcon 4 → 5：`src/Phalcon5/Config/Set/phalcon50.php`
-> - Phalcon 3 → 4 仍在规划中，详见 `plan/PHALCON3_TO_4_PLAN.md`
+> - Phalcon 3 → 4 基础规则已实现，详见 `plan/PHALCON3_TO_4_PLAN.md`
 > - 规则集不通过 extension-installer 自动加载，由用户显式选择
 >
 > 目标：等 3 → 4 能力落地后，提供一个“直接升级”体验，让用户可以用一个入口/一条命令完成 Phalcon 3.x → 5.x 升级。
@@ -150,6 +150,31 @@ vendor/bin/rector-phalcon upgrade:3-to-5 --path src
 - `Phalcon40Set`、`Phalcon50Set` 各自独立运行，确保阶段隔离。
 
 决策详见 `plan/EXTENSION_INSTALLER_PLAN.md`。
+
+### 4.1 阶段互斥保护（已实现）
+
+同一次运行**不能**同时加载 `UP_PHALCON_3_TO_4` 与 `UP_PHALCON_4_TO_5`（包括各自的 `UP_TO_*` 别名）。这是“两进程两 AST”约束的强制保障，实现在 `src/Set/PhalconStageGuard.php`：
+
+- 两个阶段 set 文件在闭包开头各声明一次阶段；同一 `RectorConfig` 实例声明到不同阶段时，立即抛 `InvalidConfigurationException`，在任何文件被处理前中止。
+- 异常信息会同时列出冲突的两个配置常量名（如 `PhalconSetList::UP_PHALCON_3_TO_4` 与 `PhalconSetList::UP_PHALCON_4_TO_5`），并提示分两个独立进程按顺序执行，而不是静默产生回退改动。
+- 状态用 `WeakMap` 按 config 实例隔离；别名重复声明同一阶段会被忽略，不误报。
+- 不依赖任何 Rector 内部接口（如 `ResettableInterface`），以保证与较低的 Rector 版本兼容；改为在两个 set 文件的 guard 调用处用 `defined('PHPUNIT_COMPOSER_INSTALL')` 检测测试环境并跳过，规避 Rector 测试基类跨测试共享同一 config 造成的误报。
+- 源码版本保护同样改用该纯 PHP 检测，不使用 Rector 内部的 `StaticPHPUnitEnvironment`。
+- `COMPOSER_BASED` 只会选中单个阶段；但若同时显式配置了另一阶段，同样会被拦下。
+
+### 4.2 源码版本保护（已实现）
+
+执行 `UP_PHALCON_3_TO_4` 前会扫描待处理源码，防止在已是 Phalcon 5 的代码上误跑 3 → 4（例如把 `Phalcon\Mvc\Url` 静默改回 `Phalcon\Url`）。实现在 `src/Set/Phalcon5SourceGuard.php` 与 `src/Set/Phalcon5Signatures.php`：
+
+- guard 在 3 → 4 set 文件加载阶段执行，早于任何文件处理；命中时抛异常中止整个 Rector 运行，不写入任何改动。
+- v5 特征集从两张 `ClassRenames` 映射表自动推导（v5 目标名 − v3 名 − v4 名），随规则表自动同步；`Phalcon\Mvc\Url` 这类 v3/v5 共存名被排除，不会误判。
+- 命中时标题显示文件总数，最多列出 10 个文件，其余汇总为 `... and N more file(s)`，避免刷屏。
+- 待处理路径优先从 CLI 参数解析（set 加载早于 Rector 设置 `PATHS`），回退到工作目录；排除 `vendor` 等常见目录；PHPUnit 环境自动跳过。
+- 误报时可设置环境变量 `RECTOR_PHALCON_SKIP_V5_GUARD=1` 跳过该检查。
+
+### 4.3 stubs 版本与依赖传递
+
+本包 `composer.json` 的 `require-dev` 中固定的 `phalcon/ide-stubs:^5.0` **仅用于本包自身的开发与测试**，不会传递给使用本包的项目。Composer 只传递依赖的 `require`，不传递 `require-dev`，因此用户可以按阶段在自己项目里安装 `^4.0`（3 → 4）或 `^5.0`（4 → 5），与本包无冲突。
 
 ---
 
@@ -314,7 +339,7 @@ src/Upgrade/Tests/
 
 当前 `composer.lock` 固定的是 `phalcon/ide-stubs: ^5.0`。
 
-这对当前 P0 的 3 → 4 类重命名没问题，因为它是配置驱动、不依赖反射。但后续如果启用 3 → 4 方法重命名，就必须有 `^4.0` stubs。
+3 → 4 类重命名是配置驱动、不依赖反射；但当前 P1 已启用 ACL / Paginator 方法重命名和 CLI Console 类型识别，因此 `phalcon40` 阶段需要 `^4.0` stubs。
 
 CI 至少分两个 job：
 
@@ -326,8 +351,10 @@ CI 至少分两个 job：
 
 `direct-35` 可以有两档：
 
-1. 当前 P0 版：只用类映射，不需要切换 stubs。
-2. 完整版：阶段 1 用 `^4.0`，阶段 2 用 `^5.0`。
+1. 基础 P0 版：只用类映射，不需要切换 stubs。
+2. 当前版：阶段 1 用 `^4.0`，阶段 2 用 `^5.0`。
+
+用户侧执行直接升级时也建议按阶段切换：先安装 `phalcon/ide-stubs:^4.0` 完成 3 → 4，再切换到 `^5.0` 执行 4 → 5。
 
 ---
 
@@ -339,19 +366,23 @@ CI 至少分两个 job：
 
 | 规则 | 处理方式 |
 |---|---|
-| `Phalcon4ClassRenames` + `RenameClassRector` | 阶段 1 使用 |
+| `src/Phalcon4/ClassRenames.php` + `RenameClassRector` | 阶段 1 使用 |
 | `Phalcon4` 的 `RenameUseImportsRector` | 阶段 1 使用 |
 | `Phalcon4` 的 `RemovedClassUsageHintRector` | 阶段 1 使用 |
+| `Phalcon4` 的 ACL / Paginator `RenameMethodRector` | 阶段 1 使用，需 `^4.0` stubs |
+| `Phalcon4` 的 `RenamePaginatorBeforePropertyRector` | 阶段 1 使用 |
+| `Phalcon4` 的 `RenameCliConsoleAddModulesRector` | 阶段 1 使用 |
 | `Phalcon5` 全套规则 | 阶段 2 使用 |
 
 ### 8.2 需要额外验证的规则
 
 | 规则 | 风险 |
 |---|---|
-| `TextAndHelperToSupportHelperRector` | Phalcon 3 只有 `Phalcon\Text`，`Phalcon\Helper\*` 是 v4 才出现；3 → 5 覆盖率取决于 3 → 4 P1 是否实现 `Text → Helper\Str` |
+| `TextAndHelperToSupportHelperRector` | 3 → 4 已实现 `Phalcon\Text` → `Phalcon\Helper\Str`，第二阶段可以看到正确的 Phalcon 4 形态；仍需补充两阶段集成 fixture |
 | `TagToTagFactoryRector` | Phalcon 3/4 都有 `Phalcon\Tag`，但参数语义和 DI 依赖需要中间态验证 |
-| `CacheAdapterFactoryConstructorInjectionRector` | 3 → 4 的 Cache 是架构级重构，P0 只做类重命名；此 v5 规则会看到 v4 形态后才可靠 |
-| 方法重命名 | 3 → 4 方法重命名尚未实现；若未实现，直接升级会漏掉部分 v3 → v4 方法变更 |
+| `CacheAdapterFactoryConstructorInjectionRector` | 3 → 4 已自动改写固定 Frontend/Backend 与 Factory 配置；复杂 Cache wiring 仍需人工确认，此 v5 规则仍需两阶段集成 fixture |
+| 方法重命名 | 3 → 4 已实现 ACL、Paginator、CLI、Filter `add()` → `set()` 与 Cache PSR-16 `exists/save` → `has/set`；其他方法重命名仍待实施，直接升级会漏掉这些 v3 → v4 方法变更 |
+| 常量重命名 | 3 → 4 已实现 Filter 常量和 DB `FETCH_*` → `Phalcon\Db\Enum`；其他常量迁移仍待实施 |
 
 ### 8.3 不应在同一次运行中混用
 
@@ -434,8 +465,8 @@ README 增加“方式四：Phalcon 3 → 5 直接升级（实验/推荐入口�
 
 按 `plan/PHALCON3_TO_4_PLAN.md` 继续推进：
 
-- P1：方法重命名、常量、`Text → Helper\Str`
-- P2：Cache / Logger / Session / Filter 结构性提示
+- P1：完成
+- P2：完成；下一步是为这些方法/常量/checklist 规则补 3 → 5 两阶段集成 fixture
 
 每完成一项，都要补 3 → 5 集成 fixture，而不是只补 3 → 4 单规则 fixture。
 
@@ -480,7 +511,7 @@ Phalcon35ClassRenames = resolve3to4(v3Class) → resolve4to5(result)
 ## 十二、关键文件清单（预计）
 
 ```text
-src/Phalcon4/Config/Set/phalcon40.php                         # 阶段 1 显式加载的目标 set（规划中）
+src/Phalcon4/Config/Set/phalcon40.php                         # 阶段 1 显式加载的目标 set
 bin/rector-phalcon                                # 新增 CLI wrapper
 composer.json                                     # bin + RectorPhalcon\Upgrade\ PSR-4
 src/Upgrade/...                                   # wrapper 实现
@@ -505,7 +536,7 @@ plan/PHALCON4_TO_5_PLAN.md                         # 标注 direct-upgrade 复�
 
 理由：
 
-- 现在 3 → 4 仍在规划中，直接升级的完整度受其实现进度限制。
+- 现在 3 → 4 的 P0 / P1 / P2 规则已全部实施，直接升级的完整度仍受真实项目验证与两阶段集成 fixture 覆盖限制。
 - 显式阶段隔离是所有后续方案的基础。
 - 集成 fixture 能提前暴露两阶段真实交互问题。
 - CLI wrapper 是可玩性提升，不是正确性前提。
