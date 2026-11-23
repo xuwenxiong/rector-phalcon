@@ -45,6 +45,22 @@ PHP);
         $this->assertSame('Phalcon\Cache', DiServiceRegistry::get('app.cache'));
     }
 
+    public function testV3CacheBackendNormalizesToV4PhalconCache(): void
+    {
+        $file = $this->writeTemp(<<<'PHP'
+<?php
+$di->setShared('cache', function () use ($config) {
+    return new \Phalcon\Cache\Backend\File(new \Phalcon\Cache\Frontend\Output(), ['cacheDir' => '/tmp']);
+});
+PHP);
+
+        DiServiceScanner::scan([$file], false);
+
+        // v3 Backend\File becomes v4 Phalcon\Cache, so RenameMethodRector's
+        // exists/save -> has/set rules (registered on Phalcon\Cache) apply.
+        $this->assertSame('Phalcon\Cache', DiServiceRegistry::get('cache'));
+    }
+
     public function testExtractsSetRegistrationWithArrowFunction(): void
     {
         $file = $this->writeTemp(<<<'PHP'

@@ -133,7 +133,19 @@ final class DiServiceScanner
             return null;
         }
 
-        return $new->class->toString();
+        $className = ltrim($new->class->toString(), '\\');
+
+        // The scanner runs at configuration time, before any file is rewritten,
+        // so a Phalcon 3 service closure still returns `Phalcon\Cache\Backend\*`.
+        // In v4 those backends are wrapped into `Phalcon\Cache`, which is the
+        // type the RenameMethodRector rules target. Normalize here so the
+        // inferred DI service type matches v4 and method renames (exists/save
+        // -> has/set) actually apply.
+        if (preg_match('~^Phalcon\\\\Cache\\\\Backend\\\\[A-Za-z]+$~i', $className) === 1) {
+            return 'Phalcon\Cache';
+        }
+
+        return $className;
     }
 
     /**
