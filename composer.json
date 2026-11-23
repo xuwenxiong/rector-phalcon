@@ -16,7 +16,7 @@
     "require-dev": {
         "phalcon/ide-stubs": "^5.0",
         "phpunit/phpunit": "^11.5",
-        "rector/rector": "^2.1"
+        "rector/rector": "^2.8"
     },
     "autoload": {
         "psr-4": {
@@ -28,6 +28,7 @@
     },
     "autoload-dev": {
         "psr-4": {
+            "RectorPhalcon\\Phalcon4\\Tests\\": "src/Phalcon4/Tests",
             "RectorPhalcon\\Phalcon5\\Tests\\": "src/Phalcon5/Tests",
             "RectorPhalcon\\Set\\Tests\\": "src/Set/Tests",
             "RectorPhalcon\\Support\\Tests\\": "src/Support/Tests"

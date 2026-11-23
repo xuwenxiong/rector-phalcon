@@ -1,0 +1,21 @@
+services:
+    -
+        class: RectorPhalcon\PHPStan\DiServiceReturnTypeExtension
+        arguments:
+            - 'Phalcon\Di'
+        tags:
+            - phpstan.broker.dynamicMethodReturnTypeExtension
+    -
+        class: RectorPhalcon\PHPStan\DiServiceReturnTypeExtension
+        arguments:
+            - 'Phalcon\Di\Di'
+        tags:
+            - phpstan.broker.dynamicMethodReturnTypeExtension
+    # Injectable::getDI() returns DiInterface, so get()/getShared() calls on it
+    # are resolved against the interface, not the concrete Di class.
+    -
+        class: RectorPhalcon\PHPStan\DiServiceReturnTypeExtension
+        arguments:
+            - 'Phalcon\Di\DiInterface'
+        tags:
+            - phpstan.broker.dynamicMethodReturnTypeExtension
