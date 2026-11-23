@@ -22,6 +22,7 @@ use PhpParser\Node\Stmt\ArrowFunction;
 use PhpParser\Node\Stmt\ClassMethod;
 use PhpParser\Node\Stmt\Expression;
 use PhpParser\Node\Stmt\Function_;
+use PhpParser\Node\Stmt\Return_;
 use PhpParser\Node\Stmt\Use_;
 use Rector\NodeTypeResolver\Node\AttributeKey;
 use Rector\Rector\AbstractRector;
@@ -68,17 +69,20 @@ CODE_SAMPLE
         $removePositions = [];
 
         foreach ($node->stmts as $position => $stmt) {
-            if (! $stmt instanceof Expression || ! $stmt->expr instanceof Assign) {
-                continue;
+            // Two shapes are supported:
+            //   $cache = new Backend\File(...)   (assignment)
+            //   return new Backend\File(...)     (DI service closure)
+            $backendNew = null;
+            $targetSlot = null;
+            if ($stmt instanceof Expression && $stmt->expr instanceof Assign && $stmt->expr->expr instanceof New_) {
+                $backendNew = $stmt->expr->expr;
+                $targetSlot = $stmt->expr; // set expr on Assign
+            } elseif ($stmt instanceof Return_ && $stmt->expr instanceof New_) {
+                $backendNew = $stmt->expr;
+                $targetSlot = $stmt; // set expr on Return_
             }
 
-            $assign = $stmt->expr;
-            if (! $assign->expr instanceof New_) {
-                continue;
-            }
-
-            $backendNew = $assign->expr;
-            if (! $backendNew->class instanceof Name) {
+            if ($backendNew === null || $targetSlot === null || ! $backendNew->class instanceof Name) {
                 continue;
             }
 
@@ -88,23 +92,28 @@ CODE_SAMPLE
             }
 
             $backendArgs = $backendNew->getArgs();
-            if (count($backendArgs) < 2 || ! $backendArgs[0]->value instanceof Variable || ! is_string($backendArgs[0]->value->name)) {
+            if (count($backendArgs) < 2) {
                 continue;
             }
 
-            $frontendVariableName = $backendArgs[0]->value->name;
-            $frontendPosition = $this->findEarlierFrontendAssignment($node->stmts, $position, $frontendVariableName);
-            if ($frontendPosition === null) {
-                continue;
+            $frontendPosition = null;
+            $frontendNew = null;
+            $firstArg = $backendArgs[0]->value;
+            if ($firstArg instanceof New_ && $firstArg->class instanceof Name) {
+                // Inline frontend: new Backend\File(new Frontend\Xxx(...), ...)
+                $frontendNew = $firstArg;
+            } elseif ($firstArg instanceof Variable && is_string($firstArg->name)) {
+                // Frontend assigned to a variable earlier in the scope.
+                $frontendPosition = $this->findEarlierFrontendAssignment($node->stmts, $position, $firstArg->name);
+                if ($frontendPosition !== null) {
+                    $frontendAssignment = $node->stmts[$frontendPosition];
+                    if ($frontendAssignment instanceof Expression && $frontendAssignment->expr instanceof Assign && $frontendAssignment->expr->expr instanceof New_) {
+                        $frontendNew = $frontendAssignment->expr->expr;
+                    }
+                }
             }
 
-            $frontendAssignment = $node->stmts[$frontendPosition];
-            if (! $frontendAssignment instanceof Expression || ! $frontendAssignment->expr instanceof Assign || ! $frontendAssignment->expr->expr instanceof New_) {
-                continue;
-            }
-
-            $frontendNew = $frontendAssignment->expr->expr;
-            if (! $frontendNew->class instanceof Name) {
+            if ($frontendNew === null || ! $frontendNew->class instanceof Name) {
                 continue;
             }
 
@@ -126,11 +135,13 @@ CODE_SAMPLE
                 continue;
             }
 
-            $assign->expr = new New_(new FullyQualified('Phalcon\Cache'), [
+            $targetSlot->expr = new New_(new FullyQualified('Phalcon\Cache'), [
                 new Arg($this->createAdapterFactoryCall($backendName, $options)),
             ]);
 
-            $removePositions[] = $frontendPosition;
+            if ($frontendPosition !== null) {
+                $removePositions[] = $frontendPosition;
+            }
             $changed = true;
         }
 

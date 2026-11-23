@@ -55,6 +55,9 @@ final class CacheOptions
         'phalcon\cache\frontend\igbinary' => 'igbinary',
         'phalcon\cache\frontend\msgpack' => 'msgpack',
         'phalcon\cache\frontend\none' => 'none',
+        // Output frontend stored the raw string without serialization; v4 uses
+        // the 'none' serializer for the same behaviour.
+        'phalcon\cache\frontend\output' => 'none',
     ];
 
     public static function serializerFromFrontendClass(string $className): ?string

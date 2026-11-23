@@ -33,7 +33,7 @@ final class DiServiceScanner
     /**
      * @param list<string> $paths
      */
-    public static function scan(array $paths): void
+    public static function scan(array $paths, bool $includeCwd = true): void
     {
         DiServiceRegistry::clear();
 
@@ -46,9 +46,11 @@ final class DiServiceScanner
         // directory (project root) so those registrations are always found.
         // The CLI-provided paths are kept too, in case they point outside cwd.
         $scanPaths = $paths;
-        $cwd = getcwd();
-        if ($cwd !== false && ! in_array($cwd, $scanPaths, true)) {
-            $scanPaths[] = $cwd;
+        if ($includeCwd) {
+            $cwd = getcwd();
+            if ($cwd !== false && ! in_array($cwd, $scanPaths, true)) {
+                $scanPaths[] = $cwd;
+            }
         }
 
         $parser = (new ParserFactory())->createForNewestSupportedVersion();

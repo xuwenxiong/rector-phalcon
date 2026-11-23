@@ -40,7 +40,7 @@ $di->setShared('app.cache', function () {
 });
 PHP);
 
-        DiServiceScanner::scan([$file]);
+        DiServiceScanner::scan([$file], false);
 
         $this->assertSame('Phalcon\Cache', DiServiceRegistry::get('app.cache'));
     }
@@ -52,7 +52,7 @@ PHP);
 $di->set('logger', fn() => new \Phalcon\Logger('messages', []));
 PHP);
 
-        DiServiceScanner::scan([$file]);
+        DiServiceScanner::scan([$file], false);
 
         $this->assertSame('Phalcon\Logger', DiServiceRegistry::get('logger'));
     }
@@ -66,7 +66,7 @@ $di->setShared('foo', function () use ($obj) {
 });
 PHP);
 
-        DiServiceScanner::scan([$file]);
+        DiServiceScanner::scan([$file], false);
 
         $this->assertNull(DiServiceRegistry::get('foo'));
     }
@@ -78,7 +78,7 @@ PHP);
 $di->setShared('cache', fn() => new \Phalcon\Cache([]));
 PHP);
 
-        DiServiceScanner::scan([$file]);
+        DiServiceScanner::scan([$file], false);
         $this->assertSame('Phalcon\Cache', DiServiceRegistry::get('cache'));
 
         // Simulate a fresh worker process: drop static state and re-read from disk.
@@ -88,7 +88,7 @@ PHP);
 
     private function writeTemp(string $contents): string
     {
-        $path = sys_get_temp_dir() . '/rector-phalcon-scanner-' . bin2hex(random_bytes(6)) . '.php';
+        $path = sys_get_temp_dir() . '/rector-phalcon-scanner-' . uniqid('', true) . '.php';
         file_put_contents($path, $contents);
         $this->tempFiles[] = $path;
 

@@ -25,7 +25,8 @@ final class CacheMigrationHintRector extends AbstractRector
      * @var string[]
      */
     private const UNSUPPORTED_CLASSES = [
-        'phalcon\cache\frontend\output',
+        // Frontend\Output is now auto-migrated (maps to the 'none' serializer)
+        // by CacheFrontendBackendToCacheRector, so it needs no TODO.
         'phalcon\cache\frontend\factory',
         'phalcon\cache\backend\apc',
         'phalcon\cache\backend\memcache',
