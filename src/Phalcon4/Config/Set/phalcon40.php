@@ -8,6 +8,7 @@ use RectorPhalcon\Phalcon4\DispatcherConstants;
 use RectorPhalcon\Phalcon4\Rector\Closure\SessionAdapterDiRector;
 use RectorPhalcon\Phalcon4\Rector\Array_\VoltOptionRenameRector;
 use RectorPhalcon\Phalcon4\Rector\Expression\ModelSaveWithDataRector;
+use RectorPhalcon\Phalcon4\Rector\FileNode\DiServiceMethodRector;
 use RectorPhalcon\Phalcon4\Rector\FileNode\LoggerAdapterMethodCallsRector;
 use RectorPhalcon\Phalcon4\Rector\FunctionLike\CacheFrontendBackendToCacheRector;
 use RectorPhalcon\Phalcon4\Rector\FunctionLike\LoggerMultipleToLoggerRector;
@@ -86,6 +87,7 @@ return static function (RectorConfig $rectorConfig): void {
         AddHandleUriArgumentRector::class,
         RegisterEnginesClosureRector::class,
         VoltOptionRenameRector::class,
+        DiServiceMethodRector::class,
         ModelSaveWithDataRector::class,
         RenameUseImportsRector::class,
         RenamePaginatorBeforePropertyRector::class,

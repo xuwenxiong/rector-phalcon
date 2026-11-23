@@ -4,15 +4,6 @@ declare(strict_types=1);
 
 namespace RectorPhalcon\Set;
 
-use PhpParser\Node;
-use PhpParser\Node\Expr\Closure;
-use PhpParser\Node\Expr\MethodCall;
-use PhpParser\Node\Expr\New_;
-use PhpParser\Node\Name;
-use PhpParser\Node\Scalar\String_;
-use PhpParser\NodeFinder;
-use PhpParser\ParserFactory;
-use PhpParser\Node\Stmt\Return_;
 use RectorPhalcon\PHPStan\DiServiceRegistry;
 
 /**
@@ -24,6 +15,10 @@ use RectorPhalcon\PHPStan\DiServiceRegistry;
  *
  * and records a service-name -> class-name map in DiServiceRegistry, so the
  * PHPStan extension can type `Di::get('cache')` as Phalcon\Cache.
+ *
+ * Uses only PHP's built-in token_get_all(): Rector ships php-parser with
+ * prefixed (scoped) class names, so referencing PhpParser\ParserFactory here
+ * is not portable across consumer projects.
  */
 final class DiServiceScanner
 {
@@ -44,7 +39,6 @@ final class DiServiceScanner
         // DI registrations usually live in a separate bootstrap/services file
         // that is not among the paths being refactored. Scan the whole working
         // directory (project root) so those registrations are always found.
-        // The CLI-provided paths are kept too, in case they point outside cwd.
         $scanPaths = $paths;
         if ($includeCwd) {
             $cwd = getcwd();
@@ -53,94 +47,188 @@ final class DiServiceScanner
             }
         }
 
-        $parser = (new ParserFactory())->createForNewestSupportedVersion();
-        $nodeFinder = new NodeFinder();
-
         foreach (self::phpFiles($scanPaths) as $filePath) {
             $contents = @file_get_contents($filePath);
             if ($contents === false) {
                 continue;
             }
-            try {
-                $stmts = $parser->parse($contents);
-            } catch (\Throwable) {
-                continue;
-            }
-            if ($stmts === null) {
-                continue;
-            }
-
-            $calls = $nodeFinder->findInstanceOf($stmts, MethodCall::class);
-            foreach ($calls as $call) {
-                self::processRegistration($call, $nodeFinder);
-            }
+            self::scanCode($contents);
         }
     }
 
-    private static function processRegistration(MethodCall $call, NodeFinder $nodeFinder): void
+    /**
+     * Token-based scan: set()/setShared('service', <closure>) and the class
+     * name from the closure's first `return new Xxx`.
+     */
+    private static function scanCode(string $code): void
     {
-        if (! $call->name instanceof Node\Identifier) {
-            return;
-        }
-        if (! in_array(strtolower($call->name->name), ['set', 'setshared'], true)) {
-            return;
-        }
+        $tokens = token_get_all($code);
+        $count = count($tokens);
 
-        $serviceNameArg = $call->getArgs()[0] ?? null;
-        $factoryArg = $call->getArgs()[1] ?? null;
-        if ($serviceNameArg === null || ! $serviceNameArg->value instanceof String_) {
-            return;
-        }
-        if ($factoryArg === null) {
-            return;
-        }
+        for ($i = 0; $i < $count; $i++) {
+            if (! self::isMethodNameToken($tokens[$i], ['set', 'setshared'])) {
+                continue;
+            }
 
-        $factory = $factoryArg->value;
-        if (! $factory instanceof Closure && ! $factory instanceof Node\Expr\ArrowFunction) {
-            return;
-        }
+            $openParenAt = self::nextSignificant($tokens, $i + 1);
+            if ($openParenAt === null || $openParenAt >= $count || $tokens[$openParenAt] !== '(') {
+                continue;
+            }
 
-        $className = self::resolveReturnedClass($factory, $nodeFinder);
-        if ($className !== null) {
-            DiServiceRegistry::set($serviceNameArg->value->value, $className);
-        }
-    }
+            $serviceName = self::firstStringArg($tokens, $openParenAt);
+            if ($serviceName === null) {
+                continue;
+            }
 
-    private static function resolveReturnedClass(Node $factory, NodeFinder $nodeFinder): ?string
-    {
-        // Arrow function: fn() => new Xxx(...)
-        if ($factory instanceof Node\Expr\ArrowFunction && $factory->expr instanceof New_) {
-            return self::classNameFromNew($factory->expr);
-        }
-
-        // Closure: find return statements
-        $returns = $nodeFinder->findInstanceOf($factory->stmts ?? [], Return_::class);
-        foreach ($returns as $return) {
-            if ($return->expr instanceof New_) {
-                $class = self::classNameFromNew($return->expr);
-                if ($class !== null) {
-                    return $class;
+            // Find `function`/`fn` within this call's argument list.
+            $closureAt = null;
+            $depth = 0;
+            for ($j = $openParenAt; $j < $count; $j++) {
+                $t = $tokens[$j];
+                if ($t === '(') {
+                    $depth++;
+                    continue;
                 }
+                if ($t === ')') {
+                    $depth--;
+                    if ($depth === 0) {
+                        break;
+                    }
+                    continue;
+                }
+                if ($depth === 1 && is_array($t) && in_array($t[0], [T_FUNCTION, T_FN], true)) {
+                    $closureAt = $j;
+                    break;
+                }
+            }
+            if ($closureAt === null) {
+                continue;
+            }
+
+            $className = self::findReturnedClass($tokens, $closureAt);
+            if ($className !== null) {
+                DiServiceRegistry::set($serviceName, self::normalizeClassName($className));
+            }
+        }
+    }
+
+    private static function findReturnedClass(array $tokens, int $closureAt): ?string
+    {
+        $count = count($tokens);
+
+        // Arrow function: fn () => new Xxx — first T_DOUBLE_ARROW after closure.
+        if (is_array($tokens[$closureAt]) && $tokens[$closureAt][0] === T_FN) {
+            for ($i = $closureAt + 1; $i < $count; $i++) {
+                if ($tokens[$i] !== T_DOUBLE_ARROW && ! (is_array($tokens[$i]) && $tokens[$i][0] === T_DOUBLE_ARROW)) {
+                    continue;
+                }
+                $next = self::nextSignificant($tokens, $i + 1);
+                if ($next !== null && is_array($tokens[$next]) && $tokens[$next][0] === T_NEW) {
+                    $classAt = self::nextSignificant($tokens, $next + 1);
+                    if ($classAt !== null && is_array($tokens[$classAt])) {
+                        return self::readClassName($tokens, $classAt);
+                    }
+                }
+                break;
+            }
+            return null;
+        }
+
+        // Regular closure: `return new Xxx`.
+        for ($i = $closureAt + 1; $i < $count; $i++) {
+            $token = $tokens[$i];
+            if (! is_array($token) || $token[0] !== T_RETURN) {
+                continue;
+            }
+            $next = self::nextSignificant($tokens, $i + 1);
+            if ($next === null || ! is_array($tokens[$next]) || $tokens[$next][0] !== T_NEW) {
+                continue;
+            }
+            $classAt = self::nextSignificant($tokens, $next + 1);
+            if ($classAt === null || ! is_array($tokens[$classAt])) {
+                continue;
+            }
+
+            return self::readClassName($tokens, $classAt);
+        }
+
+        return null;
+    }
+
+    private static function readClassName(array $tokens, int $start): ?string
+    {
+        $parts = [];
+        $count = count($tokens);
+        for ($i = $start; $i < $count; $i++) {
+            $token = $tokens[$i];
+            if (is_array($token) && in_array($token[0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
+                $parts[] = $token[1];
+            } elseif ($token === '\\') {
+                $parts[] = '\\';
+            } else {
+                break;
+            }
+        }
+
+        return $parts === [] ? null : implode('', $parts);
+    }
+
+    /** @param mixed $token */
+    private static function isMethodNameToken($token, array $names): bool
+    {
+        return is_array($token)
+            && $token[0] === T_STRING
+            && in_array(strtolower($token[1]), $names, true);
+    }
+
+    private static function firstStringArg(array $tokens, int $openParenAt): ?string
+    {
+        $depth = 0;
+        $count = count($tokens);
+        for ($i = $openParenAt; $i < $count; $i++) {
+            $token = $tokens[$i];
+            if ($token === '(') {
+                $depth++;
+                continue;
+            }
+            if ($token === ')') {
+                $depth--;
+                if ($depth === 0) {
+                    return null;
+                }
+                continue;
+            }
+            if (is_array($token) && $token[0] === T_CONSTANT_ENCAPSED_STRING && $depth === 1) {
+                $value = $token[1];
+                $quote = $value[0] ?? '';
+                if ($quote === "'" || $quote === '"') {
+                    $value = substr($value, 1, -1);
+                }
+                return $value;
             }
         }
 
         return null;
     }
 
-    private static function classNameFromNew(New_ $new): ?string
+    /** @return int|null */
+    private static function nextSignificant(array $tokens, int $from): ?int
     {
-        if (! $new->class instanceof Name) {
-            return null;
+        $count = count($tokens);
+        for ($i = $from; $i < $count; $i++) {
+            $token = $tokens[$i];
+            if (is_array($token) && in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            return $i;
         }
 
-        $className = ltrim($new->class->toString(), '\\');
+        return null;
+    }
 
-        // The scanner runs at configuration time, before any file is rewritten,
-        // so a Phalcon 3 service closure still returns `Phalcon\Cache\Backend\*`.
-        // In v4 those backends are wrapped into `Phalcon\Cache`, which is the
-        // type the RenameMethodRector rules target. Normalize here so the
-        // inferred DI service type matches v4 and method renames (exists/save
-        // -> has/set) actually apply.
+    private static function normalizeClassName(string $className): string
+    {
+        $className = ltrim($className, '\\');
         if (preg_match('~^Phalcon\\\\Cache\\\\Backend\\\\[A-Za-z]+$~i', $className) === 1) {
             return 'Phalcon\Cache';
         }
@@ -148,9 +236,7 @@ final class DiServiceScanner
         return $className;
     }
 
-    /**
-     * @return list<string>
-     */
+    /** @return list<string> */
     private static function pathsFromArgv(): array
     {
         $argv = $_SERVER['argv'] ?? [];
